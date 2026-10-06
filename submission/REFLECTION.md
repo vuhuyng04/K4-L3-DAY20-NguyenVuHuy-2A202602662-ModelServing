@@ -195,7 +195,7 @@ mỗi connection mới, làm pipeline RAG chậm gần 3×. Cái thứ hai là 2
 - [x] Mọi section **"required — replace this line"** trong các file `benchmarks/*.md`
       đã được thay bằng nhận xét của bạn
 - [x] 5 screenshots trong `submission/screenshots/`
-- [ ] `make verify` → **exit 0**
+- [x] `make verify` → **exit 0**
 - [x] Repo tên đúng mẫu `K4-L3-DAY20-HoVaTen-MSSV-ModelServing` (xem `docs/SUBMISSION.md`)
 - [ ] Repo GitHub ở chế độ **public**
 - [ ] Đã push và paste public URL vào VinUni LMS **trước 23:59 (UTC+7) ngày làm lab**
