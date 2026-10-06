@@ -25,10 +25,12 @@ for that format is as efficient as the 4-bit one. Here it is not. This run used 
 build with all layers offloaded to the Intel Arc iGPU (`ngl=99`). I isolated the cause with
 `llama-bench` (`-t 8 -p 128 -n 64`):
 
-| | tg64 GPU (`ngl=99`) | tg64 CPU (`ngl=0`) | pp128 GPU | pp128 CPU |
+| | tg64 GPU (`ngl=99`) | tg64 CPU (`ngl=0`) | pp128 GPU (`ngl=99`) | pp128 at `ngl=0` ‡ |
 |:--|--:|--:|--:|--:|
 | UD-Q4_K_XL | 23.2 | 16.5 | 405 | 196 |
 | UD-Q2_K_XL | 6.0 | 16.8 | 175 | 122 |
+
+‡ At `ngl=0` this Vulkan build still offloads large-batch prefill ops to the iGPU (op offload, found later in `bonus-build-compare-pp512.md`), so this column is not pure CPU. The decode columns are unaffected (batch 1).
 
 - On **CPU** the two quants decode at the same speed (16.5 vs 16.8 tok/s): 25 % fewer bytes
   is paid back by the more expensive Q2_K/IQ dequantization, so decode is not purely

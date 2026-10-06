@@ -29,33 +29,38 @@ is what the compiler was allowed to assume about the CPU.
 
 ## Your explanation
 
-**The prebuilt binary wins prefill by 3.42×, and the line above ("the only difference is
-what the compiler was allowed to assume") is not true on Windows.** The two binaries differ
-in three ways, not one:
+**The prebuilt "wins" prefill by 3.42×, but that is not a compiler result. It is the iGPU,
+used even at `-ngl 0`.** I first blamed Clang vs MSVC code generation. Then I tested the one
+difference that `-ngl 0` does not remove: the prebuilt Windows asset carries the Vulkan
+backend, my MSVC build does not. llama.cpp has *op offload*: even with every layer's weights
+on the CPU, large-batch ops (prefill mat-muls) can be sent to an available GPU backend,
+with the weights copied over on the fly. Decode (batch 1) stays on the CPU.
 
-| | prebuilt `llama-b10488-bin-win-vulkan-x64` | my source build |
-|:--|:--|:--|
-| Compiler | Clang 20.1.8 | MSVC 19.44 (VS 2022 Build Tools) |
-| CPU code | `GGML_CPU_ALL_VARIANTS`: 14 `ggml-cpu-*.dll`, picked at runtime → loads **`ggml-cpu-alderlake.dll`** (AVX2 + FMA + F16C + **AVX-VNNI** + BMI2) | one `ggml-cpu.dll`, `/arch:AVX2` (+FMA, F16C). MSVC "native" detection found AVX/AVX2 only, **no VNNI** |
-| OpenMP | LLVM `libomp140` | MSVC `vcomp` (`-openmp`) |
+Same prebuilt binary, `-ngl 0 -t 8 -r 3` (`llama-bench`):
 
-So "prebuilt = generic baseline" does not hold here. Upstream's Windows release *already*
-ships a Meteor-Lake-class kernel set and dispatches to it at load time (`load_backend:
-loaded CPU backend from ...ggml-cpu-alderlake.dll`).
+| Prebuilt run | pp128 | pp512 |
+|:--|--:|--:|
+| default (op offload on) | 221.6 ± 2.5 | **309.0 ± 15.9** |
+| `-nopo 1` (op offload off) | 80.5 ± 1.4 | **69.3 ± 3.4** |
+| `-dev none` (no GPU device at all) | - | **89.2 ± 1.9** |
+| **MSVC native source build** (no GPU backend) | 95.7 ± 9.1 | **82.1 ± 1.2** |
 
-**Why the gap is large on prefill but not on decode** (`bonus-build-compare-tg128.md`:
-17.1 vs 19.3 tok/s): pp512 is a 512-row mat-mul, **compute-bound**. Every weight byte
-loaded is reused across 512 tokens, so speed tracks how good the inner AVX2 kernel is.
-tg128 does one token at a time and is bandwidth/sync-bound, so any decent AVX2 kernel hits
-the same ceiling.
+With op offload disabled, the prebuilt and my build are **within noise of each other** (69–89
+vs 82 tok/s). The fingerprint was in the data from the start. Pure-CPU prefill is flat or
+slightly *down* from pp128 to pp512 (MSVC 96 → 82). The prebuilt *rises* from 222 to 309
+because a bigger batch amortises the cost of shipping weights to the GPU better.
 
-**What I ruled out with extra builds (C7, `bonus-c7-isa-survey.md`):** I built MSVC with
-AVX-VNNI explicitly on (`-DGGML_AVX_VNNI=ON`, which defined `__AVXVNNI__`), and prefill
-did **not** improve (69 / 55 tok/s vs 88 / 58 for plain AVX2), so VNNI alone is not the
-3.4×. Thread synchronisation is not it either: decode, which runs just as many barriers per
-token, is a tie. The remaining difference is the compiler's code generation for the
-quantised AVX2 dot-product/mat-mul kernels (Clang vs MSVC). I could not prove this
-directly because Clang (clang-cl) is not installed in my Build Tools. The next experiment
-would be the same source with `-T ClangCL`. Practical takeaway: on Windows, "build it
-yourself with -DGGML_NATIVE=ON" makes prefill *slower* unless you also use the compiler
-upstream uses.
+**So the real B1 finding has two parts:**
+1. **Compiler/ISA (what B1 is meant to measure):** prefill is a tie. Both builds run 256-bit
+   AVX2 kernels; the prebuilt dispatches to `ggml-cpu-alderlake.dll` (AVX2 + AVX-VNNI) at
+   runtime, my MSVC build is `/arch:AVX2`. On this CPU and this workload the extra
+   VNNI/Clang path buys nothing measurable.
+2. **The comparison harness has a blind spot.** `compare-builds.py` pins both sides to
+   `-ngl 0` on the assumption that this "isolates the compiler". That assumption fails
+   whenever one binary carries a GPU backend, because op offload still uses the GPU for
+   prefill. A fair CPU-vs-CPU comparison needs `-nopo 1` or `-dev none` on the
+   GPU-capable side. (I did not change the lab script; the table above is the corrected
+   comparison.)
+
+Practical takeaway for an iGPU laptop: even "CPU-only" serving on the Vulkan build gets
+~3–4× faster prefill for free from op offload, while decode is untouched.

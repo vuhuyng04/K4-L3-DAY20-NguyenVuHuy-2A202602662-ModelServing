@@ -38,8 +38,9 @@ after `make tune`):
 already give 14.7 tok/s (~90 % of the best), and 8–12 threads plateau at ~16.5. A
 1-thread → 4-thread speedup of 2.6× followed by a flat line is the signature of
 bandwidth-bound decode. Every generated token streams the whole active weight set
-(~1.3 GB at Q4) out of DRAM, and once a few cores keep the memory controller busy, more
-cores have nothing to compute while they wait.
+(rough estimate: "E2B" ≈ 2 B effective params × ~4.5–5 bits ≈ 1.1–1.3 GB at Q4;
+the per-layer embedding tables are looked up, not multiplied) out of DRAM. Once a few cores
+keep the memory controller busy, more cores have nothing to compute while they wait.
 
 **Why 16 is worse than 8, and why it is so noisy.** The Core Ultra 7 155H is a hybrid chip:
 6 P-cores (with HT), 8 E-cores and 2 low-power E-cores on the SoC tile = 16 cores / 22
@@ -51,7 +52,7 @@ whole run drops (16 threads: 13.5 ± 11.6). At 22 threads the HT siblings share 
 execution units, and at 44 the threads oversubscribe the cores and spin on barriers (9.6 →
 5.5 tok/s, same as 1 thread).
 
-**Something that differs from the deck:** at ~16.5 tok/s × ~1.3 GB, CPU decode pulls only
+**Something that differs from the deck:** at ~16.5 tok/s × ~1.1–1.3 GB (estimate), CPU decode pulls only
 ~20 GB/s, far below the LPDDR5x's theoretical peak. So "bandwidth-bound" here means bound
 by how much bandwidth the CPU cores *can actually pull*, plus the barrier/sync cost — not
 the DRAM spec number. The Arc iGPU, on the same memory, reaches 24 tok/s (`ngl=99`,

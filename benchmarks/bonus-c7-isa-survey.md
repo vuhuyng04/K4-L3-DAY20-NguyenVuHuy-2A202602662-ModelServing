@@ -24,14 +24,18 @@ All runs CPU-only (`-ngl 0`), `-t 8` (best from `make tune`), `-p 512 -n 128 -r 
 
 | Binary | pp512 R1 | pp512 R2 | tg128 R1 | tg128 R2 |
 |:--|--:|--:|--:|--:|
-| prebuilt (Clang, alderlake DLL) | **351.1 ± 4.4** | **285.7 ± 34.3** | 18.89 ± 0.24 | 7.42 ± 7.10 |
+| prebuilt (Clang, alderlake DLL) — *op offload to iGPU on* | 351.1 ± 4.4 † | 285.7 ± 34.3 † | 18.89 ± 0.24 | 7.42 ± 7.10 |
+| prebuilt, `-nopo 1` (op offload off, separate run) | — | 69.3 ± 3.4 | — | — |
+| prebuilt, `-dev none` (separate run) | — | 89.2 ± 1.9 | — | — |
 | MSVC NATIVE=ON (AVX2) | 87.7 ± 1.7 | 57.6 ± 8.7 | **19.68 ± 0.01** | 15.17 ± 3.76 |
 | MSVC NATIVE=OFF (AVX2+BMI2) | 80.6 ± 1.2 | 101.1 ± 4.3 | 18.96 ± 0.57 | **18.68 ± 1.55** |
 | MSVC + AVX-VNNI explicit | 68.9 ± 10.3 | 54.7 ± 12.8 | 17.72 ± 1.21 | 14.20 ± 2.79 |
 | MSVC SSE4.2 only | 4.5 ± 0.2 | 4.1 ± 0.8 | 2.72 ± 0.06 | 2.49 ± 0.90 |
 
-The official `make compare-builds` runs agree: tg128 17.1 (prebuilt) vs 19.3 (native), and pp512 343.4 vs 100.3
-(`bonus-build-compare-*.md`).
+† Not a CPU number: even at `-ngl 0` the prebuilt (which carries the Vulkan backend) offloads large-batch prefill ops to the Arc iGPU. The two extra rows turn that off.
+
+The official `make compare-builds` runs: tg128 17.1 (prebuilt) vs 19.3 (native), a tie within noise; pp512 343.4 vs 100.3,
+which is the same op-offload artefact † (`bonus-build-compare-*.md`).
 
 ## Analysis
 
@@ -39,23 +43,27 @@ The official `make compare-builds` runs agree: tg128 17.1 (prebuilt) vs 19.3 (na
    **~7× for decode** (2.6 → ~19 tok/s) and **~15–20× for prefill** (4.5 → 60–100). Without
    256-bit FMA even single-token decode is instruction-bound. With it, decode hits the
    bandwidth/sync ceiling, and every AVX2 build (MSVC or Clang) lands at ~19 tok/s.
-2. **Past AVX2, the ISA flag matters less than the compiler.** Turning AVX-VNNI on under
-   MSVC did not help (within noise or slightly worse). Yet the Clang-built prebuilt, with
-   the same ISA plus VNNI, is **3.4–4× faster on prefill**. Prefill is compute-bound
-   (weights reused across 512 tokens), so it exposes kernel code quality; decode hides it.
-   My best explanation is Clang's code generation for ggml's intrinsic-heavy quantised
-   mat-mul kernels versus MSVC's. I could not test Clang locally (no clang-cl in my Build
-   Tools), so this is a hypothesis with VNNI and OpenMP ruled out as the main cause, not a
-   proof.
-3. **"Native" is not automatically the best kernel.** With MSVC, `GGML_NATIVE=ON` only
-   probes AVX/AVX2/AVX-512 (`HAS_*` tests). It silently skipped AVX-VNNI and BMI2, which
-   `NATIVE=OFF` with defaults actually enabled. This is the same lesson as "FA3 for Hopper,
-   FA4 for Blackwell": the kernel has to match the silicon, *and* you have to check what the
-   build actually compiled in rather than trust the flag's name.
+2. **Past AVX2, nothing in the ISA or the compiler moves the needle; the GPU does.** Turning
+   AVX-VNNI on under MSVC did not help (within noise or slightly worse). The Clang-built
+   prebuilt *seemed* 3.4–4× faster on prefill. I first read that as a code-generation gap,
+   but with op offload disabled (`-nopo 1`: 69 tok/s; `-dev none`: 89 tok/s) it is level with
+   MSVC (58–101 tok/s across runs). The extra prefill speed was the iGPU being used for
+   large-batch prefill mat-muls even at `-ngl 0`. Decode (batch 1) is not offloaded, and there all
+   AVX2 builds tie at ~19 tok/s. Clang vs MSVC and VNNI vs no VNNI: no measurable
+   difference on this CPU for this model.
+3. **"Native" is not automatically the best kernel, and "`-ngl 0`" is not automatically
+   CPU-only.** With MSVC, `GGML_NATIVE=ON` only probes AVX/AVX2/AVX-512 (`HAS_*` tests). It
+   silently skipped AVX-VNNI and BMI2, which `NATIVE=OFF` with defaults actually enabled.
+   And a binary that ships a GPU backend uses it for prefill unless told not to (`-nopo 1` /
+   `-dev none`). This is the same lesson as "FA3 for Hopper, FA4 for Blackwell": check what
+   the build compiled in and which device actually ran the op, rather than trust the flag
+   name.
 4. **Noise is a first-class result on a hybrid CPU.** Round 2's prebuilt decode
    (7.4 ± 7.1) is the Windows scheduler putting some of the 8 threads on E/LP-E cores, which
    then hold up every barrier. Any build-vs-build claim under ~1.2× on this laptop needs
    several rounds before I would believe it.
 
-**Recommendation for this machine:** keep the upstream prebuilt for CPU work (best prefill,
-equal decode), and use `ngl=99` on the Arc iGPU for serving (`bonus-gpu-offload-sweep.md`).
+**Recommendation for this machine:** keep the upstream prebuilt. Its CPU kernels are as good
+as a local MSVC build, and because it carries the Vulkan backend it gets iGPU prefill even at
+`-ngl 0`. For serving, use `ngl=99` on the Arc iGPU (`bonus-gpu-offload-sweep.md`). Building
+from source only pays off here if it adds a backend (e.g. SYCL for Arc), not for CPU flags.

@@ -41,7 +41,7 @@ A ~1.05–1.13× edge for decode is real-ish at best.
 FMA, F16C and AVX-VNNI, and *both* binaries use 256-bit AVX2 kernels. The prebuilt is not a
 generic baseline: its Windows release dispatches at runtime to `ggml-cpu-alderlake.dll`.
 Once the inner loop is 256-bit SIMD, single-token decode is limited by how fast the cores
-pull ~1.3 GB of weights per token plus the per-op barrier, not by instructions, so better
+pull ~1.3 GB of weights per token (estimate) plus the per-op barrier, not by instructions, so better
 code generation has nothing to speed up. The same thing seen from the other side: an
 **SSE4.2-only** MSVC build drops to **2.6 tok/s (~7× slower)**. Without 256-bit FMA,
 decode *does* become instruction-bound. The vector width matters up to AVX2, and past that
@@ -49,6 +49,13 @@ point bandwidth takes over.
 
 **If anything favours MSVC here** it is small and plausibly the OpenMP runtime (MSVC
 `vcomp` vs LLVM `libomp140` in the prebuilt) or which cores the threads land on. With ±1–7
-tok/s of run-to-run noise I would not claim it. The decisive B1 result is the **prefill**
-comparison (`bonus-build-compare-pp512.md`), where the prebuilt Clang build is 3.42×
-faster.
+tok/s of run-to-run noise I would not claim it. The prefill comparison
+(`bonus-build-compare-pp512.md`) looked like a 3.42× prebuilt win, but that turned out to be
+llama.cpp's op offload to the Arc iGPU at `-ngl 0`. With it disabled (`-nopo 1`), prefill is
+also a tie. Decode is batch 1, so op offload does not touch it, and this tg128 comparison
+is CPU vs CPU as intended.
+
+*Note on the header line "Vector extensions detected: none":* the lab's Windows hardware
+probe does not read CPU feature flags, so it reports none. The CPU does have AVX2/AVX-VNNI:
+MSVC's configure-time probe passed `HAS_AVX2_1`, the prebuilt loads the `alderlake` variant,
+and my explicit `-DGGML_AVX_VNNI=ON` build runs without an illegal-instruction fault.

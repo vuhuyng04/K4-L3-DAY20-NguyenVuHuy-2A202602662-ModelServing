@@ -27,10 +27,9 @@
 
 **Chạy ở đâu:** laptop của tôi (không dùng Colab/Kaggle).
 
-**Setup story:** `.\lab.ps1` không chạy được trên Windows PowerShell 5.1: file là UTF-8
-không BOM, nên dấu "—" làm vỡ parser. Vì vậy tôi gọi thẳng các lệnh Python mà `lab.ps1`
-map tới (`.venv\Scripts\python labs\...`, `python -m locust ...`), với `PYTHONUTF8=1`. Vulkan
-build tự offload toàn bộ lên Arc (`ngl=99`). Riêng `make tune` tôi chạy với
+**Setup story:** `.\lab.ps1` không parse được trên Windows PowerShell 5.1 (UTF-8 không BOM,
+dấu "—" làm vỡ parser), nên tôi gọi thẳng các lệnh Python tương ứng với `PYTHONUTF8=1`.
+Vulkan build tự offload toàn bộ lên Arc (`ngl=99`); riêng `make tune` tôi chạy với
 `LAB_N_GPU_LAYERS=0` để đo đúng tác động của số thread CPU.
 
 ---
@@ -44,11 +43,10 @@ build tự offload toàn bộ lên Arc (`ngl=99`). Riêng `make tune` tôi chạ
 | UD-Q4_K_XL | 2.97 | 15741 | 455 / 2608 | 40.9 / 41.4 | 3034 / 5175 / 5175 | 24.4 |
 | UD-Q2_K_XL | 2.24 | 9721 | 1199 / 13794 | 451.2 / 457.9 | 29641 / 37585 / 37585 | 2.2 |
 
-**Quan sát:** 2-bit **không** nhanh hơn mà **chậm hơn 11×** trên iGPU (2.2 so với 24.4
-tok/s), dù nhỏ hơn 0.73 GB. `llama-bench` cho thấy trên CPU hai bản ngang nhau (16.8 so với
-16.5 tok/s). Vậy lỗi nằm ở kernel Vulkan Q2_K trên Arc, không phải ở số bit. Tôi hỏi cùng các
-câu (cộng giờ, số nguyên tố, giải thích bandwidth) trên cả hai bản: đáp án giống nhau, bản Q2
-dài dòng hơn. **Không đáng dùng.**
+**Quan sát:** 2-bit **chậm hơn 11×** trên iGPU (2.2 so với 24.4 tok/s) dù nhỏ hơn 0.73 GB.
+Trên CPU (`llama-bench`) hai bản decode ngang nhau (16.8 so với 16.5), nên vấn đề nằm ở
+kernel Vulkan Q2_K trên Arc chứ không ở số bit. Cùng câu hỏi, hai bản trả lời giống nhau.
+**Không đáng dùng.**
 
 ---
 
@@ -61,8 +59,8 @@ dài dòng hơn. **Không đáng dùng.**
 | 10 | 0.55 | 12000 | 33000 | 34000 | 8.6 | 0 (0.0%) |
 | 50 | 0.68 | 34000 | 56000 | 58000 | 21.4 | 0 (0.0%) |
 
-*(Số request lấy từ `locust-*_stats.csv`: 32 và 40. Bảng summary trên màn hình locust ghi 33
-và 41 vì có 1 request hoàn tất đúng lúc locust shutdown, sau khi CSV đã được ghi.)*
+*(Số request trong `locust-*_stats.csv` là 32 và 40; summary trên màn hình ghi 33 và 41, nhiều
+khả năng do 1 request hoàn tất lúc locust shutdown, sau khi CSV đã được ghi.)*
 
 - **Offered load tăng 5×, throughput thực tăng:** 1.23×
 - **P95 tăng:** 1.70×
@@ -71,12 +69,11 @@ và 41 vì có 1 request hoàn tất đúng lúc locust shutdown, sau khi CSV đ
 **Peak `llamacpp:n_busy_slots_per_decode`** (từ `make metrics` khi `make load-50` đang
 chạy): 3.93 / 4 slots (kèm `requests_deferred` = 46)
 
-**Saturation reading:** server đã bão hòa từ **10 users**: effective concurrency 8.6 so với
-4 slot. Lên 50 users RPS chỉ tăng 1.23×, còn P50 tăng gần 3× (12 → 34 s). Phần tăng thêm là
-**queue time**: thời gian phục vụ không đổi (request ngắn nhất 5.6 s rồi 6.3 s, ≈ 48 step ×
-~92 ms), và `requests_deferred` ≈ 46 cho thấy hàng đợi trực tiếp. Muốn nâng goodput@SLO,
-tôi đổi `--parallel 8` cùng `--ctx-size 4096` **trước**. Lý do: 4 sequence/step chỉ làm step
-chậm 2.2×, nên batching còn dư địa.
+**Saturation reading:** bão hòa ngay từ **10 users** (effective concurrency 8.6 so với 4
+slot). Lên 50 users, RPS chỉ tăng 1.23× nhưng P50 tăng gần 3× (12 → 34 s). Phần thêm là
+**queue time**: service time gần như không đổi (request ngắn nhất 5.6 → 6.3 s) và
+`requests_deferred` ≈ 46. Knob đầu tiên tôi đổi: `--parallel 8` + `--ctx-size 4096`, vì 4
+sequence/step chỉ làm step chậm 2.2×, nên batching còn dư địa.
 
 ---
 
@@ -99,11 +96,10 @@ chậm 2.2×, nên batching còn dư địa.
 - llm: 3813.2 ms
 - **stage chiếm nhiều nhất:** llm (100% của total)
 
-**Reflection:** LLM chiếm 100% là đúng kỳ vọng. Điều bất ngờ là khoảng **2 s mỗi query**
-không nằm trong model: `localhost` trên Windows thử `::1` trước, còn server chỉ bind
-127.0.0.1 (`/health`: 2067 ms qua localhost, 3 ms qua 127.0.0.1). Chạy lại với
-`--base-url http://127.0.0.1:8080`, llm còn **1340 ms**. Muốn giảm 2×: sửa host / keep-alive
-trước, sau đó prefix caching và giảm `max_tokens`.
+**Reflection:** LLM chiếm 100% đúng như kỳ vọng, nhưng ~2 s mỗi query là do `localhost`
+trên Windows thử `::1` trước rồi mới về 127.0.0.1. Gọi qua `127.0.0.1` thì llm chỉ còn
+1340 ms. Muốn giảm 2×: sửa host/keep-alive trước, sau đó prefix caching và giảm
+`max_tokens`.
 
 ---
 
@@ -122,7 +118,7 @@ speedup: 1.17×
 **Tại sao nó work:**
 
 Decode là **memory-bandwidth-bound**: mỗi token phải đọc lại toàn bộ trọng số đang active
-(~1.3 GB ở Q4) từ DRAM, trong khi phép tính trên mỗi byte rất ít. Vì vậy số thread chỉ
+(ước lượng ~1.1–1.3 GB ở Q4: "E2B" ≈ 2 B effective params) từ DRAM, trong khi phép tính trên mỗi byte rất ít. Vì vậy số thread chỉ
 giúp đến khi các core đã kéo hết băng thông mà chúng có thể kéo. Đường cong của tôi cho thấy
 đúng như vậy: 1 thread 5.6 tok/s, 4 thread 14.7 (≈ 90% đỉnh), 8–12 thread đi ngang quanh
 16.5. Sau điểm đó, thêm thread không còn việc để làm, chỉ thêm việc chờ.
@@ -135,7 +131,7 @@ E-core/LP E-core, chậm hơn và xa L3 của P-core, thành straggler. Thêm vi
 di chuyển thread, kết quả dao động rất mạnh: lần chạy lại cho 13.46 ± 11.64 tok/s ở 16
 thread, so với 16.47 ± 0.92 ở 8 thread. Lên 22 thread (HT dùng chung execution unit) và 44
 thread (oversubscribe, spin trên barrier), tốc độ rơi về 9.6 rồi 5.5, ngang 1 thread. Ngoài
-ra, ~16.5 tok/s × ~1.3 GB chỉ là ~20 GB/s, thấp hơn nhiều so với peak lý thuyết của
+ra, ~16.5 tok/s × ~1.2 GB (ước lượng) chỉ khoảng 20 GB/s, thấp hơn nhiều so với peak lý thuyết của
 LPDDR5x. "Bandwidth-bound" ở đây nghĩa là bị chặn bởi băng thông mà các core CPU *thực sự*
 kéo được, cộng chi phí đồng bộ. Đó cũng là lý do iGPU Arc trên **cùng** DRAM đạt 24–27 tok/s:
 GPU giữ được nhiều memory request đang bay hơn hẳn vài core CPU.
@@ -162,12 +158,13 @@ speedup: 1.60×
   đây không phải dung lượng hay băng thông host↔device. Mỗi token đi theo nhịp các layer
   còn lại trên CPU, cộng chi phí đồng bộ ở chỗ graph split, cộng việc CPU và GPU tranh cùng
   một DRAM. Mô hình "VRAM đầy thì offload một phần" của deck không áp dụng cho iGPU.
-- **B1 — prebuilt *thắng* bản tự build.** Bản Windows prebuilt không phải "generic": nó ship
-  14 biến thể `ggml-cpu-*.dll` và tự chọn `alderlake` (AVX2 + AVX-VNNI) lúc chạy. Decode thì
-  hòa (17.1 so với 19.3 tok/s, nằm trong nhiễu). Prefill thì prebuilt Clang **nhanh hơn
-  3.42×** (343.4 so với 100.3 tok/s) so với bản MSVC `GGML_NATIVE=ON`
-  (`bonus-build-compare-*.md`).
-- **B4 / C7 — vector width quan trọng tới AVX2, sau đó compiler mới là yếu tố quyết định.**
+- **B1 — bản tự build hòa với prebuilt, và harness so sánh có điểm mù.** Decode hòa (17.1 so
+  với 19.3 tok/s, nằm trong nhiễu). Prefill thoạt nhìn prebuilt nhanh hơn 3.42×
+  (343.4 so với 100.3), nhưng đó **không phải compiler**: ngay cả ở `-ngl 0`, prebuilt
+  (có Vulkan backend) vẫn *op-offload* các mat-mul prefill lên iGPU. Tắt đi (`-nopo 1`) thì
+  prefill chỉ 69 tok/s, ngang bản MSVC (82). Vậy "`-ngl 0` = chỉ so compiler" là giả định sai
+  khi một bên mang GPU backend (`bonus-build-compare-*.md`).
+- **B4 / C7 — vector width chỉ quan trọng tới AVX2; sau đó ISA hay compiler đều không tạo khác biệt.**
   Bản chỉ có SSE4.2 chậm hơn ~7× khi decode và ~15–20× khi prefill. Bật AVX-VNNI tường minh
   trên MSVC không giúp gì. Ngoài ra MSVC "native" âm thầm bỏ qua VNNI và BMI2
   (`bonus-c7-isa-survey.md`).
@@ -198,7 +195,7 @@ mỗi connection mới, làm pipeline RAG chậm gần 3×. Cái thứ hai là 2
 - [x] Mọi section **"required — replace this line"** trong các file `benchmarks/*.md`
       đã được thay bằng nhận xét của bạn
 - [x] 5 screenshots trong `submission/screenshots/`
-- [x] `make verify` → **exit 0**
+- [ ] `make verify` → **exit 0**
 - [x] Repo tên đúng mẫu `K4-L3-DAY20-HoVaTen-MSSV-ModelServing` (xem `docs/SUBMISSION.md`)
 - [ ] Repo GitHub ở chế độ **public**
 - [ ] Đã push và paste public URL vào VinUni LMS **trước 23:59 (UTC+7) ngày làm lab**
